@@ -1,0 +1,649 @@
+/* =====================================================================
+   ORPHEUS · estilos
+
+   ÍNDICE
+   1. Tokens        paleta, colores por tema, tipografía, medidas
+   2. Base          reset y elementos globales
+   3. Layout        rejilla principal (lateral / contenido / reproductor)
+   4. Lateral       marca y navegación
+   5. Cabecera      título, herramientas
+   6. Componentes   botones, buscador, selector, barras de rango
+   7. Lista         filas de canciones, portadas, estado vacío
+   8. Reproductor   barra inferior
+   9. Overlays      menú, diálogo, aviso, zona de soltar
+   10. Móvil
+
+   Regla de color: el naranja (--accent) es SOLO para lo importante
+   (canción actual, play, progreso, controles activos, acción principal).
+   Todo lo demás usa navy, cian y grises.
+   ===================================================================== */
+
+
+/* =====================================================================
+   1. TOKENS
+   ===================================================================== */
+
+:root {
+  /* --- Paleta base (Persona 3). Nunca se usa suelta en los componentes --- */
+  --navy:   #1B293F;   /* Deep-sea Navy */
+  --white:  #F4F6F7;   /* Light Grid White */
+  --orange: #EA5A40;   /* Vibrant Red-Orange */
+  --cyan:   #32BEE2;   /* Persona Cyan-Blue */
+  --sky:    #A4CDE7;   /* Muted Sky Blue */
+  --slate:  #627284;   /* Medium Shadow Grey */
+
+  /* --- Tema: light-dark(claro, oscuro). Sigue el sistema; se puede forzar
+         con <html data-theme="light|dark"> --- */
+  color-scheme: light dark;
+
+  --bg:        light-dark(var(--white), color-mix(in srgb, var(--navy) 78%, black));
+  --panel:     light-dark(#ffffff,      var(--navy));
+  --panel2:    light-dark(color-mix(in srgb, var(--sky) 22%, white), color-mix(in srgb, var(--navy) 80%, var(--sky)));
+  --line:      light-dark(color-mix(in srgb, var(--sky) 55%, white), color-mix(in srgb, var(--navy) 68%, var(--slate)));
+  --grid:      light-dark(color-mix(in srgb, var(--sky) 26%, transparent), color-mix(in srgb, var(--slate) 14%, transparent));
+  --text:      light-dark(var(--navy),  var(--white));
+  --muted:     light-dark(var(--slate), color-mix(in srgb, var(--sky) 70%, var(--slate)));
+
+  /* --- Acento (lo importante) --- */
+  --accent:      var(--orange);
+  --accent-text: light-dark(color-mix(in srgb, var(--orange) 78%, var(--navy)), var(--orange)); /* naranja legible como texto */
+  --on-accent:   var(--navy);                                                                   /* texto/icono sobre naranja */
+  --danger:      var(--accent-text);
+
+  /* --- Secundario --- */
+  --focus: var(--cyan);
+
+  /* --- Sombras y fondos sobre portadas --- */
+  --shadow:  light-dark(0 10px 32px rgb(27 41 63 / .16), 0 10px 32px rgb(0 0 0 / .5));
+  --scrim:   rgb(10 16 28 / .55);
+
+  /* --- Tipografía --- */
+  --font-d: 'Bricolage Grotesque', 'Trebuchet MS', system-ui, sans-serif;   /* títulos */
+  --font-b: 'Figtree', system-ui, -apple-system, 'Segoe UI', sans-serif;    /* texto */
+
+  /* --- Medidas --- */
+  --player-h: 96px;
+  --leaf: 4px 14px 4px 14px;   /* forma "pluma": portadas y botones */
+
+  /* --- Zonas seguras en móvil --- */
+  box-sizing: border-box;
+  padding-top: env(safe-area-inset-top, 0px);
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+}
+
+:root[data-theme="light"] { color-scheme: light; }
+:root[data-theme="dark"]  { color-scheme: dark; }
+
+
+/* =====================================================================
+   2. BASE
+   ===================================================================== */
+
+*, *::before, *::after { box-sizing: border-box; }
+
+html {
+  height: 100%;
+  scroll-padding-top: env(safe-area-inset-top, 0px);
+}
+
+body {
+  margin: 0;
+  height: 100%;
+  background: var(--bg);
+  color: var(--text);
+  font: 400 15px/1.45 var(--font-b);
+  -webkit-font-smoothing: antialiased;
+}
+
+[hidden] { display: none !important; }
+
+button, input, select { font: inherit; color: inherit; }
+button { cursor: pointer; background: none; border: 0; padding: 0; }
+
+:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+
+/* Iconos (sprite SVG). Para uno relleno: style="fill:currentColor" */
+.i {
+  width: 20px;
+  height: 20px;
+  flex: none;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+
+/* =====================================================================
+   3. LAYOUT
+   ===================================================================== */
+
+.app {
+  display: grid;
+  grid-template-columns: 264px 1fr;
+  grid-template-rows: minmax(0, 1fr) auto;
+  height: 100%;
+}
+.app > * { min-width: 0; min-height: 0; }
+
+.main {
+  grid-row: 1;
+  grid-column: 2;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  /* cuadrícula sutil de fondo, como en el arte de Persona 3 */
+  background-image:
+    linear-gradient(var(--grid) 1px, transparent 1px),
+    linear-gradient(90deg, var(--grid) 1px, transparent 1px);
+  background-size: 32px 32px;
+}
+
+
+/* =====================================================================
+   4. LATERAL
+   ===================================================================== */
+
+.side {
+  grid-row: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 22px;
+  padding: 22px 14px;
+  overflow: auto;
+  background: var(--panel);
+  border-right: 1px solid var(--line);
+}
+
+/* --- Marca --- */
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 0 6px;
+  color: inherit;
+  text-decoration: none;
+}
+.brand-logo { height: 56px; width: auto; flex: none; }
+.wordmark {
+  font: 800 1.6rem/1 var(--font-d);
+  letter-spacing: -.02em;
+}
+
+/* --- Navegación --- */
+.nav { display: flex; flex-direction: column; gap: 2px; }
+
+.nav-label {
+  margin: 16px 10px 6px;
+  font-size: .8rem;
+  font-weight: 600;
+  color: var(--muted);
+}
+
+.nav-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 10px;
+  border-radius: 10px;
+  text-align: left;
+  color: var(--text);
+  transition: background .12s;
+}
+.nav-item span {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.nav-item em {
+  font-style: normal;
+  font-size: .8rem;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+.nav-item:hover { background: var(--panel2); }
+.nav-item[aria-current="page"] {
+  background: var(--panel2);
+  box-shadow: inset 3px 0 0 var(--accent);
+  font-weight: 600;
+}
+.nav-item.new { color: var(--muted); }
+.nav-item.new:hover { color: var(--text); }
+
+
+/* =====================================================================
+   5. CABECERA
+   ===================================================================== */
+
+.head {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: 26px 28px 14px;
+}
+.head-top {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+h1 {
+  margin: 0;
+  font: 800 clamp(1.7rem, 3.2vw, 2.5rem)/1.05 var(--font-d);
+  letter-spacing: -.025em;
+}
+.sub { margin: 6px 0 0; color: var(--muted); font-size: .9rem; }
+
+.tools { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+#viewActions { display: contents; }
+.spacer { flex: 1; }
+
+
+/* =====================================================================
+   6. COMPONENTES
+   ===================================================================== */
+
+/* --- Botones --- */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 16px;
+  border: 1px solid var(--line);
+  border-radius: var(--leaf);
+  background: var(--panel);
+  font-weight: 600;
+  transition: filter .12s, background .12s, border-color .12s;
+}
+.btn:hover { background: var(--panel2); border-color: var(--cyan); }
+.btn:disabled { opacity: .5; pointer-events: none; }
+
+.btn.primary { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
+.btn.primary:hover { filter: brightness(1.08); }
+.btn.ghost  { background: transparent; }
+.btn.danger { color: var(--danger); }
+
+.icon-btn {
+  position: relative;
+  display: inline-grid;
+  place-items: center;
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  color: var(--muted);
+  transition: color .12s, background .12s;
+}
+.icon-btn:hover { color: var(--text); background: var(--panel2); }
+.icon-btn[aria-pressed="true"] { color: var(--accent-text); }   /* activo: aleatorio, repetir, favorito */
+.icon-btn .i { width: 19px; height: 19px; }
+.fav[aria-pressed="true"] .i { fill: currentColor; }
+
+.icon-btn .badge {
+  position: absolute;
+  top: 3px;
+  right: 3px;
+  min-width: 13px;
+  height: 13px;
+  border-radius: 99px;
+  background: var(--accent);
+  color: var(--on-accent);
+  font-size: .62rem;
+  font-weight: 800;
+  line-height: 13px;
+  text-align: center;
+}
+
+/* --- Buscador y selector --- */
+.search {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 200px;
+  padding: 8px 12px;
+  border: 1px solid var(--line);
+  border-radius: 99px;
+  background: var(--panel);
+  color: var(--muted);
+}
+.search input { width: 100%; border: 0; outline: 0; background: transparent; color: var(--text); }
+.search:focus-within { border-color: var(--cyan); }
+
+select {
+  padding: 9px 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--panel);
+  color: var(--text);
+}
+
+/* --- Barras de rango (posición y volumen). --p lo actualiza el JS --- */
+input[type=range] {
+  --p: 0%;
+  -webkit-appearance: none;
+  appearance: none;
+  width: 100%;
+  height: 22px;
+  margin: 0;
+  background: transparent;
+  cursor: pointer;
+}
+input[type=range]::-webkit-slider-runnable-track {
+  height: 6px;
+  border-radius: 99px;
+  background: linear-gradient(var(--accent), var(--accent)) 0 0 / var(--p) 100% no-repeat, var(--line);
+}
+input[type=range]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 14px;
+  height: 14px;
+  margin-top: -4px;
+  border-radius: 50%;
+  background: var(--text);
+  border: 2px solid var(--panel);
+}
+input[type=range]::-moz-range-track    { height: 6px; border-radius: 99px; background: var(--line); }
+input[type=range]::-moz-range-progress { height: 6px; border-radius: 99px; background: var(--accent); }
+input[type=range]::-moz-range-thumb    { width: 10px; height: 10px; border-radius: 50%; background: var(--text); border: 2px solid var(--panel); }
+
+
+/* =====================================================================
+   7. LISTA DE CANCIONES
+   ===================================================================== */
+
+.rows {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 4px 18px 28px;
+  overflow: auto;
+}
+
+.row {
+  display: grid;
+  grid-template-columns: 48px minmax(0, 1.4fr) minmax(0, 1fr) 54px 36px 36px;
+  gap: 14px;
+  align-items: center;
+  padding: 7px 10px;
+  border-radius: 12px;
+  cursor: pointer;
+  transition: background .12s;
+}
+.row:hover { background: var(--panel2); }
+
+/* Canción seleccionada: aquí manda el naranja */
+.row.current { background: var(--panel2); box-shadow: inset 3px 0 0 var(--accent); }
+.row.current .t { color: var(--accent-text); }
+
+.meta { min-width: 0; }
+.t, .a, .alb { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.t { font-weight: 600; }
+.a, .alb, .dur { color: var(--muted); font-size: .9rem; }
+.dur { text-align: right; font-variant-numeric: tabular-nums; }
+
+/* --- Portadas --- */
+.thumb {
+  position: relative;
+  width: 48px;
+  height: 48px;
+  border-radius: var(--leaf);
+  overflow: hidden;
+  background: var(--panel2);
+}
+.thumb img, .np-cover img { display: block; width: 100%; height: 100%; object-fit: cover; }
+
+/* Portada de relleno (sin carátula). 4 variantes: debe coincidir con PLACEHOLDER_VARIANTS en app.js */
+.ph {
+  display: grid;
+  place-items: center;
+  width: 100%;
+  height: 100%;
+  color: var(--white);
+  font: 800 1.2rem/1 var(--font-d);
+}
+.ph[data-v="0"] { background: linear-gradient(135deg, var(--cyan),  var(--navy)); }
+.ph[data-v="1"] { background: linear-gradient(135deg, var(--slate), var(--navy)); }
+.ph[data-v="2"] { background: linear-gradient(135deg, var(--navy),  var(--cyan)); }
+.ph[data-v="3"] { background: linear-gradient(135deg, var(--cyan),  var(--slate)); }
+
+/* Icono play sobre la portada */
+.pl {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  background: var(--scrim);
+  color: var(--white);
+  opacity: 0;
+  transition: opacity .12s;
+}
+.row:hover .pl, .row.current .pl, .row:focus-visible .pl { opacity: 1; }
+.pl .i { fill: currentColor; }
+.row.current .pl { color: var(--accent); }
+
+/* --- Estado vacío --- */
+.empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  max-width: 420px;
+  margin: 8vh auto 0;
+  padding: 0 16px;
+  text-align: center;
+}
+.empty .big { font: 800 1.6rem/1.15 var(--font-d); letter-spacing: -.02em; }
+.empty p { margin: 0; color: var(--muted); }
+.empty-logo { height: 120px; width: auto; }
+
+
+/* =====================================================================
+   8. REPRODUCTOR INFERIOR
+   ===================================================================== */
+
+.player {
+  grid-row: 2;
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(320px, 1.6fr) minmax(0, 1fr);
+  gap: 18px;
+  align-items: center;
+  min-height: var(--player-h);
+  padding: 12px 22px;
+  background: var(--panel);
+  border-top: 1px solid var(--line);
+}
+.player.idle .ctrl,
+.player.idle .vol { opacity: .45; pointer-events: none; }
+
+/* --- Canción actual --- */
+.now { display: flex; align-items: center; gap: 12px; min-width: 0; }
+.np-cover {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 64px;
+  height: 64px;
+  border-radius: var(--leaf);
+  overflow: hidden;
+  background: var(--panel2);
+  color: var(--muted);
+}
+.np-text { min-width: 0; }
+.np-t, .np-a { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.np-t { font-weight: 600; }
+.np-a { color: var(--muted); font-size: .9rem; }
+
+/* --- Controles --- */
+.ctrl { display: flex; flex-direction: column; gap: 2px; }
+.btns { display: flex; justify-content: center; align-items: center; gap: 6px; }
+
+.play-btn {
+  display: grid;
+  place-items: center;
+  width: 50px;
+  height: 50px;
+  border-radius: 8px 20px 8px 20px;
+  background: var(--accent);
+  color: var(--on-accent);
+  transition: filter .12s, transform .08s;
+}
+.play-btn:hover  { filter: brightness(1.08); }
+.play-btn:active { transform: scale(.95); }
+.play-btn .i { width: 22px; height: 22px; fill: currentColor; }
+
+/* --- Barra de posición --- */
+.seekrow {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: var(--muted);
+  font-size: .8rem;
+  font-variant-numeric: tabular-nums;
+}
+.seekrow span { width: 42px; }
+.seekrow span:first-child { text-align: right; }
+
+/* --- Volumen --- */
+.vol { display: flex; align-items: center; justify-content: flex-end; gap: 6px; }
+.vol input { max-width: 130px; }
+
+
+/* =====================================================================
+   9. MENÚ, DIÁLOGO, AVISOS
+   ===================================================================== */
+
+.menu {
+  position: fixed;
+  z-index: 60;
+  min-width: 230px;
+  max-width: min(92vw, 300px);
+  max-height: min(60vh, 380px);
+  padding: 6px;
+  overflow: auto;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  box-shadow: var(--shadow);
+}
+.menu button {
+  display: block;
+  width: 100%;
+  padding: 9px 12px;
+  border-radius: 9px;
+  text-align: left;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.menu button:hover { background: var(--panel2); }
+.menu .danger { color: var(--danger); }
+.menu .mh { padding: 8px 12px 4px; font-size: .8rem; font-weight: 600; color: var(--muted); }
+.menu hr { margin: 6px 4px; border: 0; border-top: 1px solid var(--line); }
+
+dialog {
+  width: min(92vw, 390px);
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: 8px 24px 8px 24px;
+  background: var(--panel);
+  color: var(--text);
+  box-shadow: var(--shadow);
+}
+dialog::backdrop { background: var(--scrim); }
+
+.dlg-body { display: flex; flex-direction: column; gap: 12px; padding: 22px; }
+.dlg-body h2 { margin: 0; font: 800 1.3rem/1.2 var(--font-d); letter-spacing: -.01em; }
+.dlg-body p { margin: 0; color: var(--muted); }
+.dlg-body input {
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--bg);
+  color: var(--text);
+}
+.dlg-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 4px; }
+
+.toast {
+  position: fixed;
+  left: 50%;
+  bottom: calc(var(--player-h) + 18px + env(safe-area-inset-bottom, 0px));
+  z-index: 70;
+  max-width: 90vw;
+  padding: 10px 16px;
+  transform: translateX(-50%);
+  border-radius: 99px;
+  background: var(--text);
+  color: var(--bg);
+  font-weight: 500;
+  text-align: center;
+  box-shadow: var(--shadow);
+}
+
+.drop {
+  position: fixed;
+  inset: 10px;
+  z-index: 80;
+  display: grid;
+  place-items: center;
+  border: 3px dashed var(--accent);
+  border-radius: 24px;
+  background: color-mix(in srgb, var(--bg) 88%, transparent);
+  font: 800 1.6rem var(--font-d);
+  pointer-events: none;
+}
+
+
+/* =====================================================================
+   10. MÓVIL
+   ===================================================================== */
+
+@media (max-width: 820px) {
+  :root { --player-h: 128px; }
+
+  .app { grid-template-columns: 1fr; grid-template-rows: auto minmax(0, 1fr) auto; }
+
+  /* Lateral pasa a barra superior con pestañas */
+  .side { grid-row: 1; gap: 10px; padding: 12px 12px 10px; overflow: visible; border-right: 0; border-bottom: 1px solid var(--line); }
+  .brand-logo { height: 44px; }
+  .wordmark { font-size: 1.3rem; }
+  .nav { flex-direction: row; gap: 6px; padding-bottom: 2px; overflow-x: auto; }
+  .nav-label { display: none; }
+  .nav-item { flex: none; padding: 7px 14px; border: 1px solid var(--line); border-radius: 99px; }
+  .nav-item[aria-current="page"] { border-color: var(--accent); box-shadow: none; }
+
+  .main { grid-row: 2; grid-column: 1; }
+  .head { gap: 12px; padding: 16px 16px 10px; }
+  .head-top { align-items: center; }
+  .search { order: 9; flex: 1 1 100%; min-width: 0; }
+  .spacer { display: none; }
+
+  .rows { padding: 4px 8px 20px; }
+  .row { grid-template-columns: 48px minmax(0, 1fr) 36px 36px; gap: 10px; }
+  .alb, .dur { display: none; }
+
+  /* Reproductor en dos filas: canción + botones / barra de posición */
+  .player {
+    grid-row: 3;
+    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-areas: "now btns" "seek seek";
+    gap: 6px 10px;
+    padding: 10px 14px;
+  }
+  .now { grid-area: now; }
+  .np-cover { width: 48px; height: 48px; }
+  .ctrl { display: contents; }
+  .btns { grid-area: btns; gap: 0; }
+  .seekrow { grid-area: seek; }
+  .vol { display: none; }
+  .icon-btn { width: 34px; height: 34px; }
+  .play-btn { width: 44px; height: 44px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * { transition: none !important; animation: none !important; }
+}
