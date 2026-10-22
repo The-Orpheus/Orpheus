@@ -61,9 +61,10 @@ function mimeFor(name, type) {
 
 /* ============================== 3. DB ============================== */
 /* Dos capas que trabajan juntas:
-   · Local → IndexedDB del navegador: copia rápida de la biblioteca (también funciona sin conexión).
-   · Cloud → Supabase (tablas + almacenamiento privado): lo que mantiene igual la biblioteca en todos los dispositivos.
-   Stores: items (datos), files (audio), lists (listas), settings (ajustes, solo en este dispositivo) */
+   · Local → IndexedDB del navegador: solo guarda los datos de la biblioteca (títulos, portadas, listas) para que la página abra rápido.
+   · Cloud → Supabase (tablas + almacenamiento privado): ahí viven las canciones y es lo que mantiene igual la biblioteca en todos los dispositivos.
+   El AUDIO nunca se guarda en el dispositivo: se reproduce por streaming desde la nube.
+   Stores: items (datos), lists (listas), settings (ajustes, solo locales) · files = solo se usa para subir a la nube la biblioteca antigua */
 
 /* ---- Local (IndexedDB) ---- */
 const Local = (() => {
@@ -184,10 +185,15 @@ const Cloud = (() => {
     uploadFile: (id, blob) => api(objPath(id), {
       method: 'POST', headers: { 'Content-Type': blob.type || 'application/octet-stream', 'x-upsert': 'true' }, body: blob,
     }),
-    async downloadFile(id) {
-      const r = await api(`/storage/v1/object/authenticated/${CONFIG.bucket}/${uid()}/${enc(id)}`);
-      const b = await r.blob();
-      return b.type ? b : new Blob([b], { type: 'audio/mpeg' });
+    /* URL temporal (6 h) para reproducir por streaming; el <audio> no puede mandar la cabecera de sesión */
+    async signedUrl(id) {
+      const r = await api(`/storage/v1/object/sign/${CONFIG.bucket}/${uid()}/${enc(id)}`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ expiresIn: 21600 }),
+      });
+      const j = await r.json();
+      const path = j.signedURL || j.signedUrl;
+      if (!path) throw fail('No se pudo preparar la canción', 500);
+      return path.startsWith('http') ? path : path.startsWith('/storage/v1') ? U + path : `${U}/storage/v1${path}`;
     },
     removeFile: id => api(objPath(id), { method: 'DELETE' }),
   };
@@ -270,6 +276,9 @@ const DB = (() => {
       }
       saveSynced(store, synced);
     }
+    /* El audio no se guarda en el dispositivo: se borran las copias locales de canciones que ya están en la nube */
+    const syncedItems = syncedSet('items');
+    for (const f of await Local.all('files')) if (syncedItems.has(f.id)) await Local.del('files', f.id);
   }
   /* 'ok' | 'busy' | 'fail' */
   async function sync() {
@@ -284,20 +293,12 @@ const DB = (() => {
   return {
     init: () => Local.init(),
     all: s => Local.all(s),
-    cached: (s, k) => Local.get(s, k),                 // solo lo que ya está en este dispositivo
-    async get(s, k) {
-      const v = await Local.get(s, k);
-      if (v || s !== 'files' || !Cloud.hasSession()) return v;
-      const rec = { id: k, blob: await Cloud.downloadFile(k) };   // primera vez en este dispositivo: se descarga y se guarda
-      await Local.put('files', rec);
-      return rec;
-    },
+    get: (s, k) => Local.get(s, k),
+    streamUrl: id => Cloud.signedUrl(id),              // reproducción por streaming desde la nube
     async put(s, v) {
+      if (s === 'files') { await Cloud.uploadFile(v.id, v.blob); return; }   // el audio va directo a la nube, no se guarda aquí
       await Local.put(s, v);
-      if (s === 'files') {
-        try { await Cloud.uploadFile(v.id, v.blob); }
-        catch (e) { await Local.del(s, v.id).catch(() => {}); throw e; }
-      } else if (META.includes(s)) queue('put', s, v.id);
+      if (META.includes(s)) queue('put', s, v.id);
     },
     async del(s, k) {
       await Local.del(s, k);
@@ -438,7 +439,7 @@ const state = {
 };
 const audio = new Audio();
 audio.preload = 'auto';
-let playToken = 0, errorStreak = 0, useDataUrl = false, triedData = false, scrubbing = false;
+let playToken = 0, errorStreak = 0, triedData = false, scrubbing = false;
 
 /* =========================== 6. PLAYER ============================= */
 function buildOrder(startId) {
@@ -458,30 +459,22 @@ function playFromView(id) {
   buildOrder(id);
   playId(id);
 }
-async function loadSource(blob, forceData) {
-  if (state.currentUrl && state.currentUrl.startsWith('blob:')) URL.revokeObjectURL(state.currentUrl);
-  const token = playToken;
-  state.currentUrl = (forceData || useDataUrl) ? await readAsDataURL(blob) : URL.createObjectURL(blob);
-  if (token !== playToken) return;
-  audio.src = state.currentUrl;
+async function loadSource(url) {
+  state.currentUrl = url;
+  audio.src = url;
   try { await audio.play(); } catch (e) { /* el navegador pidió interacción: queda en pausa */ }
 }
 async function playId(id) {
   const item = state.items.get(id);
   if (!item) return;
   const token = ++playToken;
-  let rec = await DB.cached('files', id);
-  if (!rec) {                                   // primera vez en este dispositivo: se descarga de la nube
-    toast('Descargando…', 0);
-    try { rec = await DB.get('files', id); } catch (e) { console.warn(e); }
-    if (token !== playToken) return;
-    $('#toast').hidden = true;
-    if (!rec) { toast('No se pudo descargar: revisa tu conexión'); return; }
-  }
+  let url = null;
+  try { url = await DB.streamUrl(id); } catch (e) { console.warn(e); }
   if (token !== playToken) return;
-  state.currentId = id; state.currentBlob = rec.blob; triedData = false;
+  if (!url) { toast('No se puede reproducir: revisa tu conexión'); return; }
+  state.currentId = id; triedData = false;
   updateNowPlaying(); markPlaying(); setMediaSession(item);
-  await loadSource(rec.blob);
+  await loadSource(url);
 }
 function step(dir, auto = false) {
   if (!state.order.length) return;
@@ -896,7 +889,6 @@ function bindEvents() {
   audio.addEventListener('timeupdate', updateTimes);
   audio.addEventListener('durationchange', updateTimes);
   audio.addEventListener('loadedmetadata', () => {
-    if (triedData) useDataUrl = true;       // si el modo alterno funcionó, se recuerda
     const it = state.items.get(state.currentId);
     if (it && !it.duration && isFinite(audio.duration)) { it.duration = audio.duration; DB.put('items', it).catch(() => {}); renderRows(); }
     updateTimes();
@@ -907,7 +899,11 @@ function bindEvents() {
   audio.addEventListener('ended', () => step(1, true));
   audio.addEventListener('error', async () => {
     if (!state.currentId || !audio.getAttribute('src')) return;
-    if (!useDataUrl && !triedData && state.currentBlob) { triedData = true; await loadSource(state.currentBlob, true); return; }
+    if (!triedData) {                          // un reintento con una URL nueva (por si la anterior caducó)
+      triedData = true;
+      const id = state.currentId;
+      try { const u = await DB.streamUrl(id); if (state.currentId === id) { await loadSource(u); return; } } catch (e) {}
+    }
     const it = state.items.get(state.currentId);
     toast(`No se puede abrir «${it ? it.title : 'el archivo'}»`);
     if (++errorStreak <= 3 && state.order.length > 1) setTimeout(() => step(1, true), 600);
