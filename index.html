@@ -30,6 +30,7 @@
   <symbol id="i-mute" viewBox="0 0 24 24"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><line x1="23" y1="9" x2="17" y2="15"/><line x1="17" y1="9" x2="23" y2="15"/></symbol>
   <symbol id="i-grid" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/></symbol>
   <symbol id="i-list" viewBox="0 0 24 24"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></symbol>
+  <symbol id="i-logout" viewBox="0 0 24 24"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></symbol>
   <symbol id="i-feather" viewBox="0 0 24 24"><path d="M20.24 12.24a6 6 0 0 0-8.49-8.49L5 10.5V19h8.5z"/><line x1="16" y1="8" x2="2" y2="22"/><line x1="17.5" y1="15" x2="9" y2="15"/></symbol>
 </svg>
 
@@ -108,6 +109,17 @@
       <button class="btn primary" id="dlgOk" type="button">Aceptar</button>
     </div>
   </div>
+</dialog>
+
+<dialog id="login">
+  <form class="dlg-body" id="loginForm">
+    <h2>Entrar a Orpheus</h2>
+    <p>Usa el correo y la contraseña de tu cuenta. Solo tendrás que hacerlo una vez en cada dispositivo.</p>
+    <input id="loginEmail" type="email" name="email" autocomplete="username" placeholder="Correo" required>
+    <input id="loginPass" type="password" name="password" autocomplete="current-password" placeholder="Contraseña" required>
+    <p class="err" id="loginErr" role="alert" hidden></p>
+    <div class="dlg-actions"><button class="btn primary" id="loginOk" type="submit">Entrar</button></div>
+  </form>
 </dialog>
 
 <div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
