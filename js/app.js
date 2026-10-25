@@ -28,7 +28,8 @@ const CONFIG = {
   /* Conexión con Supabase (la clave "publishable" es pública por diseño; lo que protege tus datos son las reglas del proyecto) */
   supabaseUrl: 'https://phhlkybgxezcymixajnj.supabase.co',
   supabaseKey: 'sb_publishable_mir-9ntK2ZBXFsgbuqvGqA_eyyTCeGv',
-  bucket: 'songs',
+  /* Worker de Cloudflare que guarda y reproduce las canciones (Backblaze B2). Pega aquí su dirección. */
+  workerUrl: 'https://orpheus-audio.frozxd162.workers.dev',
 };
 
 /* ============================ 2. UTILS ============================= */
@@ -62,7 +63,7 @@ function mimeFor(name, type) {
 /* ============================== 3. DB ============================== */
 /* Dos capas que trabajan juntas:
    · Local → IndexedDB del navegador: solo guarda los datos de la biblioteca (títulos, portadas, listas) para que la página abra rápido.
-   · Cloud → Supabase (tablas + almacenamiento privado): ahí viven las canciones y es lo que mantiene igual la biblioteca en todos los dispositivos.
+   · Cloud → Supabase (inicio de sesión + tablas de datos) y un Worker de Cloudflare que guarda las canciones en Backblaze B2.
    El AUDIO nunca se guarda en el dispositivo: se reproduce por streaming desde la nube.
    Stores: items (datos), lists (listas), settings (ajustes, solo locales) · files = solo se usa para subir a la nube la biblioteca antigua */
 
@@ -155,7 +156,17 @@ const Cloud = (() => {
     return r;
   }
   const uid = () => { if (!session) throw fail('Sin sesión', 401); return session.user_id; };
-  const objPath = id => `/storage/v1/object/${CONFIG.bucket}/${uid()}/${enc(id)}`;
+  const W = CONFIG.workerUrl.replace(/\/+$/, '');
+  /* Llamadas al Worker (audio): llevan la sesión de Supabase para que sepa que eres tú */
+  async function wk(path, opts = {}) {
+    const t = await token();
+    const r = await fetch(W + path, { ...opts, headers: { Authorization: 'Bearer ' + t, ...(opts.headers || {}) } });
+    if (!r.ok) {
+      let m = ''; try { const j = await r.json(); m = j.error || j.message || ''; } catch (e) {}
+      throw fail(m || `Error ${r.status}`, r.status);
+    }
+    return r;
+  }
 
   return {
     hasSession: () => !!session,
@@ -181,21 +192,18 @@ const Cloud = (() => {
     }),
     delRow: (store, id) => api(`/rest/v1/orpheus_data?store=eq.${store}&id=eq.${enc(id)}`, { method: 'DELETE' }),
 
-    /* Archivos de audio (almacenamiento privado) */
-    uploadFile: (id, blob) => api(objPath(id), {
-      method: 'POST', headers: { 'Content-Type': blob.type || 'application/octet-stream', 'x-upsert': 'true' }, body: blob,
+    /* Archivos de audio (Worker → Backblaze B2, bucket privado) */
+    uploadFile: (id, blob) => wk('/f/' + enc(id), {
+      method: 'PUT', headers: { 'Content-Type': blob.type || 'application/octet-stream' }, body: blob,
     }),
     /* URL temporal (6 h) para reproducir por streaming; el <audio> no puede mandar la cabecera de sesión */
     async signedUrl(id) {
-      const r = await api(`/storage/v1/object/sign/${CONFIG.bucket}/${uid()}/${enc(id)}`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ expiresIn: 21600 }),
-      });
+      const r = await wk('/sign', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id }) });
       const j = await r.json();
-      const path = j.signedURL || j.signedUrl;
-      if (!path) throw fail('No se pudo preparar la canción', 500);
-      return path.startsWith('http') ? path : path.startsWith('/storage/v1') ? U + path : `${U}/storage/v1${path}`;
+      if (!j.url) throw fail('No se pudo preparar la canción', 500);
+      return j.url;
     },
-    removeFile: id => api(objPath(id), { method: 'DELETE' }),
+    removeFile: id => wk('/f/' + enc(id), { method: 'DELETE' }),
   };
 })();
 
