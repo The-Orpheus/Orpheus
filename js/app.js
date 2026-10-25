@@ -494,11 +494,27 @@ function insertNext(id) {
   refreshQueue();
   playId(id);
 }
+/* Buscar + play de algo que ya está en la cola: se saca de su sitio y pasa a sonar justo después del actual */
+function moveNext(id) {
+  const from = state.order.indexOf(id);
+  if (from < 0) return insertNext(id);
+  state.order.splice(from, 1);
+  if (from < state.pos) state.pos--;
+  const at = state.pos + 1;
+  state.order.splice(at, 0, id);
+  state.queue = state.queue.filter(x => x !== id);
+  const qi = state.queue.indexOf(state.currentId);
+  state.queue.splice(qi < 0 ? state.queue.length : qi + 1, 0, id);
+  state.pos = at;
+  refreshQueue();
+  playId(id);
+}
 function playFromView(id, force = false) {
   const idx = state.order.indexOf(id);
   const searching = !!state.query.trim();
   if (!force && state.order.length) {
-    if (idx >= 0 && (searching || sameSource())) return jumpTo(idx);
+    if (idx >= 0 && searching) return moveNext(id);
+    if (idx >= 0 && sameSource()) return jumpTo(idx);
     if (idx < 0 && searching) return insertNext(id);
   }
   startQueue(visibleItems(false).map(i => i.id), viewSource(), id);
