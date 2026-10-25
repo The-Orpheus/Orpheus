@@ -9,7 +9,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,800&family=Figtree:wght@400;500;600&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="css/style.css?v=4">
+<link rel="stylesheet" href="css/style.css?v=5">
 </head>
 
 <body>
@@ -31,6 +31,10 @@
   <symbol id="i-grid" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/></symbol>
   <symbol id="i-list" viewBox="0 0 24 24"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></symbol>
   <symbol id="i-logout" viewBox="0 0 24 24"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></symbol>
+  <symbol id="i-chev" viewBox="0 0 24 24"><polyline points="6 9 12 15 18 9"/></symbol>
+  <symbol id="i-disc" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="3"/></symbol>
+  <symbol id="i-x" viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></symbol>
+  <symbol id="i-grip" viewBox="0 0 24 24"><circle cx="9" cy="6" r="1.5"/><circle cx="15" cy="6" r="1.5"/><circle cx="9" cy="12" r="1.5"/><circle cx="15" cy="12" r="1.5"/><circle cx="9" cy="18" r="1.5"/><circle cx="15" cy="18" r="1.5"/></symbol>
   <symbol id="i-feather" viewBox="0 0 24 24"><path d="M20.24 12.24a6 6 0 0 0-8.49-8.49L5 10.5V19h8.5z"/><line x1="16" y1="8" x2="2" y2="22"/><line x1="17.5" y1="15" x2="9" y2="15"/></symbol>
 </svg>
 
@@ -47,17 +51,20 @@
 
   <!-- ============ CONTENIDO ============ -->
   <main class="main">
-    <header class="head">
+    <header class="head" id="head">
       <div class="head-top">
-        <div>
+        <div class="head-title">
           <h1 id="viewTitle">Biblioteca</h1>
           <p class="sub" id="viewSub"></p>
         </div>
-        <button class="btn primary" id="addBtn" type="button"><svg class="i"><use href="#i-plus"/></svg>Añadir archivos</button>
+        <div class="head-actions">
+          <button class="btn" id="playShuffle" type="button" title="Reproducir un elemento al azar de la biblioteca"><svg class="i"><use href="#i-shuffle"/></svg><span class="lbl">Aleatorio</span></button>
+          <button class="btn primary" id="addBtn" type="button" title="Añadir archivos"><svg class="i"><use href="#i-plus"/></svg><span class="lbl">Añadir</span></button>
+          <button class="icon-btn" id="headToggle" type="button" aria-label="Ocultar herramientas" aria-expanded="true"><svg class="i"><use href="#i-chev"/></svg></button>
+        </div>
       </div>
-      <div class="tools">
+      <div class="tools" id="tools">
         <button class="btn" id="playAll" type="button"><svg class="i" style="fill:currentColor"><use href="#i-play"/></svg>Reproducir</button>
-        <button class="btn" id="playShuffle" type="button"><svg class="i"><use href="#i-shuffle"/></svg>Aleatorio</button>
         <span id="viewActions"></span>
         <span class="spacer"></span>
         <label class="search"><svg class="i"><use href="#i-search"/></svg><input id="search" type="search" placeholder="Buscar" aria-label="Buscar" autocomplete="off"></label>
@@ -70,6 +77,7 @@
   <!-- ============ BARRA INFERIOR ============ -->
   <footer class="player idle" id="player">
     <div class="now">
+      <button class="icon-btn expand-btn" id="expandBtn" type="button" aria-label="Abrir cola de reproducción" aria-expanded="false"><svg class="i"><use href="#i-chev"/></svg></button>
       <div class="np-cover" id="npCover"></div>
       <div class="np-text">
         <div class="np-t" id="npTitle">Nada seleccionado</div>
@@ -94,6 +102,10 @@
       <button class="icon-btn" id="muteBtn" type="button" aria-label="Silenciar"><svg class="i"><use href="#i-vol"/></svg></button>
       <input type="range" id="volume" min="0" max="1" step="0.01" value="0.8" aria-label="Volumen">
     </div>
+    <section class="queue" id="queue" hidden aria-label="Cola de reproducción">
+      <div class="q-head"><b>Cola</b><span id="qInfo"></span></div>
+      <div class="q-scroll" id="qScroll"><div class="q-list" id="qList" role="list"></div></div>
+    </section>
   </footer>
 </div>
 
@@ -122,10 +134,25 @@
   </form>
 </dialog>
 
+<dialog id="editDlg">
+  <form class="dlg-body" id="editForm">
+    <h2>Editar información</h2>
+    <label class="fld"><span>Título</span><input id="edTitle" type="text" maxlength="200" required autocomplete="off"></label>
+    <label class="fld"><span>Autor</span><input id="edArtist" type="text" maxlength="200" list="dlArtists" autocomplete="off"></label>
+    <label class="fld"><span>Álbum</span><input id="edAlbum" type="text" maxlength="200" list="dlAlbums" autocomplete="off"></label>
+    <label class="fld"><span>Nº de pista (para ordenar el álbum)</span><input id="edTrack" type="number" min="1" max="999" inputmode="numeric"></label>
+    <datalist id="dlArtists"></datalist><datalist id="dlAlbums"></datalist>
+    <div class="dlg-actions">
+      <button class="btn ghost" id="edCancel" type="button">Cancelar</button>
+      <button class="btn primary" type="submit">Guardar</button>
+    </div>
+  </form>
+</dialog>
+
 <div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
 <div class="drop" id="drop" hidden>Suelta los archivos para añadirlos</div>
 <input type="file" id="fileInput" accept=".mp3,audio/*" multiple hidden>
 
-<script src="js/app.js?v=4"></script>
+<script src="js/app.js?v=5"></script>
 </body>
 </html>
