@@ -388,6 +388,7 @@ const Tags = (() => {
         else if (id === 'TPE1' || id === 'TP1') out.artist = decode(d.subarray(1), d[0]);
         else if (id === 'TPE2' || id === 'TP2') out.albumArtist = decode(d.subarray(1), d[0]);
         else if (id === 'TALB' || id === 'TAL') out.album = decode(d.subarray(1), d[0]);
+        else if (id === 'TRCK' || id === 'TRK') out.track = parseInt(decode(d.subarray(1), d[0]), 10) || 0;
         else if (id === 'APIC' || id === 'PIC') {
           const pic = parsePic(d, v22);
           if (pic.data.length > 100 && (!out.pic || pic.type === 3)) out.pic = pic;
@@ -416,13 +417,13 @@ const Tags = (() => {
   }
   /* Devuelve { title, artist, album, cover(data URL | null) } */
   async function read(file) {
-    const r = { title: '', artist: '', album: '', cover: null };
+    const r = { title: '', artist: '', album: '', track: 0, cover: null };
     try {
       const head = new Uint8Array(await file.slice(0, 10).arrayBuffer());
       if (head[0] === 0x49 && head[1] === 0x44 && head[2] === 0x33) {
         const buf = new Uint8Array(await file.slice(0, 10 + synch(head, 6)).arrayBuffer());
         const t = parseV2(buf);
-        r.title = t.title || ''; r.artist = t.artist || t.albumArtist || ''; r.album = t.album || '';
+        r.title = t.title || ''; r.artist = t.artist || t.albumArtist || ''; r.album = t.album || ''; r.track = t.track || 0;
         if (t.pic) r.cover = await shrinkCover(new Blob([t.pic.data], { type: sniff(t.pic.data) }));
       }
       if (!r.title || !r.artist) {
@@ -441,7 +442,10 @@ const state = {
   lists: [],                        // { id, name, ids[], created }
   view: { type: 'library', id: null },   // library | favorites | list
   query: '', sort: 'added',
-  queue: [], order: [], pos: -1,    // cola del contexto, orden real (con aleatorio) y posición
+  queue: [], order: [], pos: -1,    // cola base, orden real (con aleatorio / arrastre) y posición
+  source: { type: 'library', id: null, sort: 'added' },   // de dónde salió la cola
+  temp: new Set(),                  // ids añadidos a la cola de forma temporal (búsqueda)
+  expanded: false,                  // ventana de reproducción desplegada
   currentId: null, currentBlob: null, currentUrl: null,
   shuffle: false, repeat: 'off',    // off | all | one
 };
@@ -462,10 +466,50 @@ function buildOrder(startId) {
   }
   state.order = ids;
 }
-function playFromView(id) {
-  state.queue = visibleItems().map(i => i.id);
-  buildOrder(id);
+/* ---- Cola de reproducción (estilo Lark Player) ----
+   · Elegir algo en una vista distinta a la de la cola → se genera una cola nueva con TODA esa vista
+     (en orden, o mezclada si el aleatorio está activo).
+   · Elegir algo en la misma vista, o desde una búsqueda → NO se crea otra cola: se salta a ese elemento
+     (si no estaba en la cola, se inserta como temporal justo después del actual). */
+const viewSource = () => { const v = state.view; return v.type === 'albums' ? { type: 'library', id: null } : { type: v.type, id: v.id }; };
+const sameSource = () => { const s = state.source, v = viewSource(); return s.type === v.type && (s.id || null) === (v.id || null) && s.sort === state.sort; };
+
+function startQueue(ids, source, startId) {
+  state.queue = [...ids];
+  if (!state.queue.includes(startId)) state.queue.push(startId);
+  state.source = { ...source, sort: source.sort ?? state.sort };
+  state.temp.clear();
+  buildOrder(startId);
+  refreshQueue();
+  playId(startId);
+}
+function jumpTo(i) { state.pos = i; playId(state.order[i]); }
+function insertNext(id) {
+  const at = state.pos + 1;
+  state.order.splice(at, 0, id);
+  const qi = state.queue.indexOf(state.currentId);
+  state.queue.splice(qi < 0 ? state.queue.length : qi + 1, 0, id);
+  state.temp.add(id);
+  state.pos = at;
+  refreshQueue();
   playId(id);
+}
+function playFromView(id, force = false) {
+  const idx = state.order.indexOf(id);
+  const searching = !!state.query.trim();
+  if (!force && state.order.length) {
+    if (idx >= 0 && (searching || sameSource())) return jumpTo(idx);
+    if (idx < 0 && searching) return insertNext(id);
+  }
+  startQueue(visibleItems(false).map(i => i.id), viewSource(), id);
+}
+/* Un elemento al azar de toda la biblioteca; deja el aleatorio activado para lo que sigue */
+function playRandom() {
+  const all = [...state.items.values()].sort((a, b) => b.added - a.added);
+  if (!all.length) { toast('La biblioteca está vacía'); return; }
+  state.shuffle = true; savePrefs(); updateModes();
+  const pick = all[Math.floor(Math.random() * all.length)];
+  startQueue(all.map(i => i.id), { type: 'library', id: null, sort: 'added' }, pick.id);
 }
 async function loadSource(url) {
   state.currentUrl = url;
@@ -481,7 +525,7 @@ async function playId(id) {
   if (token !== playToken) return;
   if (!url) { toast('No se puede reproducir: revisa tu conexión'); return; }
   state.currentId = id; triedData = false;
-  updateNowPlaying(); markPlaying(); setMediaSession(item);
+  updateNowPlaying(); markPlaying(); setMediaSession(item); markQueue();
   await loadSource(url);
 }
 function step(dir, auto = false) {
@@ -489,7 +533,7 @@ function step(dir, auto = false) {
   if (auto && state.repeat === 'one') { audio.currentTime = 0; audio.play().catch(() => {}); return; }
   let p = state.pos + dir;
   if (p >= state.order.length) {
-    if (state.repeat === 'all' || !auto) { if (state.shuffle) shuffleArray(state.order); p = 0; }
+    if (state.repeat === 'all' || !auto) { if (state.shuffle) shuffleArray(state.order); p = 0; refreshQueue(); }
     else { audio.pause(); audio.currentTime = 0; return; }
   }
   if (p < 0) p = state.order.length - 1;
@@ -507,7 +551,7 @@ function togglePlay() {
 }
 function toggleShuffle() {
   state.shuffle = !state.shuffle;
-  if (state.queue.length) buildOrder(state.currentId);
+  if (state.queue.length) { buildOrder(state.currentId); refreshQueue(); }
   savePrefs(); updateModes();
 }
 function cycleRepeat() {
@@ -538,16 +582,39 @@ function savePrefs() {
 function getList(id) { return state.lists.find(l => l.id === id); }
 function saveList(l) { return DB.put('lists', l); }
 
-function visibleItems() {
+const albumKey = a => String(a || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim().toLowerCase();
+
+/* Álbumes automáticos: se agrupan los elementos que comparten el campo Álbum */
+function getAlbums() {
+  const map = new Map();
+  for (const it of state.items.values()) {
+    const k = albumKey(it.album); if (!k) continue;
+    let a = map.get(k);
+    if (!a) { a = { key: k, name: it.album.trim(), ids: [], artists: new Map(), cover: null, duration: 0 }; map.set(k, a); }
+    a.ids.push(it.id); a.duration += it.duration || 0;
+    if (!a.cover && it.cover) a.cover = it.cover;
+    const ar = (it.artist || '').trim(); if (ar) a.artists.set(ar, (a.artists.get(ar) || 0) + 1);
+  }
+  return [...map.values()].map(a => {
+    const top = [...a.artists.entries()].sort((x, y) => y[1] - x[1])[0];
+    a.artist = !top ? '' : (top[1] / a.ids.length >= 0.5 ? top[0] : 'Varios autores');
+    return a;
+  }).sort((x, y) => collator.compare(x.name, y.name));
+}
+const getAlbum = key => getAlbums().find(a => a.key === key);
+
+function visibleItems(withQuery = true) {
   const v = state.view;
   let arr;
-  if (v.type === 'library') arr = [...state.items.values()];
+  if (v.type === 'library' || v.type === 'albums') arr = [...state.items.values()];
   else if (v.type === 'favorites') arr = [...state.items.values()].filter(i => i.fav);
+  else if (v.type === 'album') arr = [...state.items.values()].filter(i => albumKey(i.album) === v.id);
   else arr = (getList(v.id)?.ids || []).map(id => state.items.get(id)).filter(Boolean);
   const q = state.query.trim().toLowerCase();
-  if (q) arr = arr.filter(i => `${i.title} ${i.artist} ${i.album}`.toLowerCase().includes(q));
+  if (withQuery && q) arr = arr.filter(i => `${i.title} ${i.artist} ${i.album}`.toLowerCase().includes(q));
   const s = state.sort;
   if (s === 'added') arr.sort((a, b) => b.added - a.added);
+  else if (s === 'track') arr.sort((a, b) => (a.track || 1e6) - (b.track || 1e6) || collator.compare(a.title, b.title));
   else if (s === 'title') arr.sort((a, b) => collator.compare(a.title, b.title));
   else if (s === 'artist') arr.sort((a, b) => collator.compare(a.artist || '\uffff', b.artist || '\uffff') || collator.compare(a.title, b.title));
   return arr;
@@ -586,7 +653,7 @@ async function importFiles(fileList) {
         const m = base.match(/^(.+?)\s+-\s+(.+)$/);
         if (m && !meta.artist) { meta.artist = m[1].trim(); meta.title = m[2].trim(); } else meta.title = base;
       }
-      const item = { id: uid(), title: meta.title, artist: meta.artist, album: meta.album, duration, cover: meta.cover, fav: false, added: Date.now() + n, size: f.size, sig };
+      const item = { id: uid(), title: meta.title, artist: meta.artist, album: meta.album, track: meta.track || 0, duration, cover: meta.cover, fav: false, added: Date.now() + n, size: f.size, sig };
       await DB.put('files', { id: item.id, blob });
       await DB.put('items', item);
       state.items.set(item.id, item);
@@ -621,6 +688,7 @@ async function deleteItem(id) {
   state.queue = state.queue.filter(x => x !== id);
   state.order = state.order.filter(x => x !== id);
   state.pos = Math.max(0, state.order.indexOf(state.currentId));
+  state.temp.delete(id); refreshQueue();
   renderNav(); renderMain();
 }
 
@@ -699,7 +767,10 @@ function ask({ title, text = '', input = null, placeholder = '', ok = 'Aceptar' 
 function openMenu(btn, id) {
   const menu = $('#menu');
   const inList = state.view.type === 'list';
+  const itm = state.items.get(id);
   menu.innerHTML =
+    `<button type="button" role="menuitem" data-m="edit">Editar información…</button>` +
+    (itm?.album ? `<button type="button" role="menuitem" data-m="goalbum">Ir al álbum</button>` : '') + `<hr>` +
     (state.lists.length ? `<div class="mh">Añadir a una lista</div>` + state.lists.map(l => `<button type="button" role="menuitem" data-m="add" data-list="${l.id}">${esc(l.name)}</button>`).join('') : '') +
     `<button type="button" role="menuitem" data-m="newlist">Nueva lista…</button><hr>` +
     (inList ? `<button type="button" role="menuitem" data-m="remove">Quitar de esta lista</button>` : '') +
@@ -716,13 +787,14 @@ const closeMenu = () => { $('#menu').hidden = true; };
 function setView(type, id = null) {
   state.view = { type, id };
   state.query = ''; $('#search').value = '';
-  state.sort = type === 'list' ? 'manual' : 'added';
+  state.sort = type === 'list' ? 'manual' : type === 'album' ? 'track' : 'added';
   buildSortOptions(); renderNav(); renderMain();
   $('#rows').scrollTop = 0;
 }
 function buildSortOptions() {
   const opts = [['added', 'Recientes'], ['title', 'Título'], ['artist', 'Autor']];
   if (state.view.type === 'list') opts.unshift(['manual', 'Orden de la lista']);
+  if (state.view.type === 'album') opts.unshift(['track', 'Nº de pista']);
   const sel = $('#sort');
   sel.innerHTML = opts.map(([v, l]) => `<option value="${v}">${l}</option>`).join('');
   sel.value = state.sort;
@@ -733,6 +805,7 @@ function renderNav() {
   const cur = (t, id) => (v.type === t && (v.id || null) === (id || null)) ? ' aria-current="page"' : '';
   let h = `<button class="nav-item" type="button" data-view="library"${cur('library')}>${icon('grid')}<span>Biblioteca</span><em>${state.items.size}</em></button>`;
   h += `<button class="nav-item" type="button" data-view="favorites"${cur('favorites')}>${icon('heart')}<span>Favoritos</span><em>${[...state.items.values()].filter(i => i.fav).length}</em></button>`;
+  h += `<button class="nav-item" type="button" data-view="albums"${(v.type === 'albums' || v.type === 'album') ? ' aria-current="page"' : ''}>${icon('disc')}<span>Álbumes</span><em>${getAlbums().length}</em></button>`;
   h += `<div class="nav-label">Listas</div>`;
   h += state.lists.map(l => `<button class="nav-item" type="button" data-view="list" data-id="${l.id}"${cur('list', l.id)}>${icon('list')}<span>${esc(l.name)}</span><em>${l.ids.filter(i => state.items.has(i)).length}</em></button>`).join('');
   h += `<button class="nav-item new" type="button" data-act="newlist">${icon('plus')}<span>Nueva lista</span></button>`;
@@ -742,13 +815,17 @@ function renderNav() {
 
 function renderMain() {
   const v = state.view;
+  if (v.type === 'album' && !getAlbum(v.id)) return setView('albums');
   let title = 'Biblioteca';
   if (v.type === 'favorites') title = 'Favoritos';
+  if (v.type === 'albums') title = 'Álbumes';
+  if (v.type === 'album') title = getAlbum(v.id).name;
   if (v.type === 'list') title = getList(v.id)?.name || 'Lista';
   $('#viewTitle').textContent = title;
   $('#viewActions').innerHTML = v.type === 'list'
     ? `<button class="btn ghost" type="button" data-act="rename-list">Renombrar</button><button class="btn ghost danger" type="button" data-act="delete-list">Eliminar lista</button>`
-    : '';
+    : v.type === 'album' ? `<button class="btn ghost" type="button" data-act="to-albums">Todos los álbumes</button>` : '';
+  $('#playAll').hidden = $('#sort').hidden = v.type === 'albums';
   renderRows();
 }
 
@@ -756,6 +833,7 @@ function emptyHTML() {
   const v = state.view;
   if (state.query.trim()) return `<div class="empty"><div class="big">Sin resultados</div><p>No hay nada que coincida con «${esc(state.query)}».</p></div>`;
   if (v.type === 'favorites') return `<div class="empty"><div class="big">Aún no hay favoritos</div><p>Marca el corazón de cualquier elemento y aparecerá aquí.</p></div>`;
+  if (v.type === 'albums') return `<div class="empty"><div class="big">Aún no hay álbumes</div><p>Se crean solos cuando varios elementos comparten el campo Álbum. Puedes editarlo desde el menú ⋯.</p></div>`;
   if (v.type === 'list') return `<div class="empty"><div class="big">Esta lista está vacía</div><p>Abre el menú ⋯ de un elemento de la biblioteca y elige esta lista.</p></div>`;
   return `<div class="empty"><img class="empty-logo" src="${CONFIG.logoSrc}" alt=""><div class="big">Todo listo para empezar</div><p>Arrastra tus archivos a esta ventana o pulsa el botón para añadirlos.</p><button class="btn primary" type="button" data-act="add">${icon('plus')}Añadir archivos</button></div>`;
 }
@@ -771,11 +849,28 @@ function rowHTML(it) {
   </div>`;
 }
 
+const albumHTML = a => `<button class="album" type="button" data-album="${esc(a.key)}">
+    <div class="alb-cover">${a.cover ? `<img src="${a.cover}" alt="" loading="lazy" decoding="async">` : `<div class="ph" data-v="${hash(a.key) % PLACEHOLDER_VARIANTS}">${esc(a.name.charAt(0).toUpperCase())}</div>`}</div>
+    <div class="alb-name">${esc(a.name)}</div>
+    <div class="alb-sub">${esc(a.artist || 'Sin autor')} · ${a.ids.length}</div>
+  </button>`;
+
 function renderRows() {
+  const v = state.view;
+  $('#playShuffle').disabled = !state.items.size;
+  if (v.type === 'albums') {
+    const q = state.query.trim().toLowerCase();
+    const albums = getAlbums().filter(a => !q || `${a.name} ${a.artist}`.toLowerCase().includes(q));
+    $('#viewSub').textContent = albums.length ? `${albums.length} ${albums.length === 1 ? 'álbum' : 'álbumes'}` : '';
+    $('#rows').innerHTML = albums.length ? `<div class="album-grid">${albums.map(albumHTML).join('')}</div>` : emptyHTML();
+    return;
+  }
   const arr = visibleItems();
   const total = arr.reduce((s, i) => s + (i.duration || 0), 0);
-  $('#viewSub').textContent = arr.length ? `${arr.length} ${arr.length === 1 ? 'elemento' : 'elementos'}${total ? ', ' + fmtTotal(total) : ''}` : '';
-  $('#playAll').disabled = $('#playShuffle').disabled = !arr.length;
+  let sub = arr.length ? `${arr.length} ${arr.length === 1 ? 'elemento' : 'elementos'}${total ? ', ' + fmtTotal(total) : ''}` : '';
+  if (v.type === 'album' && sub) { const a = getAlbum(v.id); if (a?.artist) sub = `${a.artist} · ${sub}`; }
+  $('#viewSub').textContent = sub;
+  $('#playAll').disabled = !arr.length;
   $('#rows').innerHTML = arr.length ? arr.map(rowHTML).join('') : emptyHTML();
   markPlaying();
 }
@@ -796,6 +891,7 @@ function updateNowPlaying() {
   $('#npArtist').textContent = it ? (it.artist || 'Sin autor') : 'Elige algo de la biblioteca';
   $('#npCover').innerHTML = it ? coverHTML(it) : icon('feather', 'style="width:26px;height:26px"');
   updatePlayIcon();
+  if (!it && state.expanded) setExpanded(false);
 }
 function updatePlayIcon() {
   const playing = !audio.paused && !audio.ended;
@@ -821,6 +917,149 @@ function updateVolume() {
   setRange($('#volume'), v, 1);
   $('#muteBtn use').setAttribute('href', v === 0 ? '#i-mute' : '#i-vol');
 }
+/* ---- Cola de reproducción: ventana desplegable ---- */
+function sourceLabel() {
+  const s = state.source;
+  if (s.type === 'favorites') return 'Favoritos';
+  if (s.type === 'album') return getAlbum(s.id)?.name || 'Álbum';
+  if (s.type === 'list') return getList(s.id)?.name || 'Lista';
+  return 'Biblioteca';
+}
+function queueRowHTML(id) {
+  const it = state.items.get(id); if (!it) return '';
+  return `<div class="q-row" role="listitem" data-id="${id}">
+    <span class="q-handle" aria-label="Arrastrar para cambiar el orden">${icon('grip', 'style="fill:currentColor"')}</span>
+    <div class="thumb">${coverHTML(it)}</div>
+    <div class="meta"><div class="t">${esc(it.title)}</div><div class="a">${esc(it.artist || 'Sin autor')}${state.temp.has(id) ? ' · temporal' : ''}</div></div>
+    <div class="dur">${it.duration ? fmt(it.duration) : ''}</div>
+    <button class="icon-btn" type="button" data-q="rm" aria-label="Quitar de la cola">${icon('x')}</button>
+  </div>`;
+}
+function renderQueue() {
+  const sc = $('#qScroll'), top = sc.scrollTop;
+  $('#qList').innerHTML = state.order.map(queueRowHTML).join('');
+  $('#qInfo').textContent = `${sourceLabel()} · ${state.order.length}${state.shuffle ? ' · aleatorio' : ''}`;
+  sc.scrollTop = top;
+  markQueue();
+}
+const refreshQueue = () => { if (state.expanded) renderQueue(); };
+function markQueue(center = false) {
+  if (!state.expanded) return;
+  const rows = $('#qList').children;
+  for (let i = 0; i < rows.length; i++) rows[i].classList.toggle('current', i === state.pos);
+  rows[state.pos]?.scrollIntoView({ block: center ? 'center' : 'nearest' });
+}
+function setExpanded(on) {
+  if (on && !state.currentId) return;
+  state.expanded = on;
+  $('#player').classList.toggle('expanded', on);
+  $('#queue').hidden = !on;
+  const b = $('#expandBtn');
+  b.setAttribute('aria-expanded', String(on));
+  b.setAttribute('aria-label', on ? 'Cerrar cola de reproducción' : 'Abrir cola de reproducción');
+  if (on) { renderQueue(); markQueue(true); }
+}
+function removeFromQueue(i) {
+  const id = state.order[i]; if (id == null) return;
+  const wasCurrent = i === state.pos;
+  state.order.splice(i, 1);
+  state.queue = state.queue.filter(x => x !== id);
+  state.temp.delete(id);
+  if (i < state.pos) state.pos--;
+  if (wasCurrent) {
+    if (!state.order.length) { state.pos = -1; stopPlayback(); return; }
+    state.pos = Math.min(i, state.order.length - 1);
+    playId(state.order[state.pos]);
+  }
+  renderQueue();
+}
+/* Arrastrar para reordenar (puntero: sirve con ratón y con dedo) */
+function bindQueue() {
+  const list = $('#qList');
+  let drag = null;
+  list.addEventListener('pointerdown', e => {
+    const h = e.target.closest('.q-handle'); if (!h) return;
+    e.preventDefault();
+    list.setPointerCapture(e.pointerId);
+    drag = { row: h.closest('.q-row'), pid: e.pointerId };
+    drag.row.classList.add('dragging');
+  });
+  list.addEventListener('pointermove', e => {
+    if (!drag || e.pointerId !== drag.pid) return;
+    const sc = $('#qScroll'), r = sc.getBoundingClientRect();
+    if (e.clientY < r.top + 36) sc.scrollTop -= 14; else if (e.clientY > r.bottom - 36) sc.scrollTop += 14;
+    let before = null;
+    for (const s of list.children) {
+      if (s === drag.row) continue;
+      const b = s.getBoundingClientRect();
+      if (e.clientY < b.top + b.height / 2) { before = s; break; }
+    }
+    if (before !== drag.row.nextElementSibling) list.insertBefore(drag.row, before);
+  });
+  const end = e => {
+    if (!drag || e.pointerId !== drag.pid) return;
+    drag.row.classList.remove('dragging'); drag = null;
+    const ids = [...list.children].map(r => r.dataset.id);
+    if (ids.join() === state.order.join()) return;
+    state.order = ids;
+    if (!state.shuffle) state.queue = [...ids];          // sin aleatorio, el nuevo orden pasa a ser el orden base
+    state.pos = Math.max(0, ids.indexOf(state.currentId));
+    markQueue();
+  };
+  list.addEventListener('pointerup', end);
+  list.addEventListener('pointercancel', end);
+  list.addEventListener('click', e => {
+    const row = e.target.closest('.q-row'); if (!row || e.target.closest('.q-handle')) return;
+    const i = [...list.children].indexOf(row);
+    if (e.target.closest('[data-q="rm"]')) return removeFromQueue(i);
+    if (i === state.pos) return togglePlay();
+    jumpTo(i);
+  });
+}
+
+/* ---- Editar información (título, autor, álbum, nº de pista) ---- */
+let editingId = null;
+function editItem(id) {
+  const it = state.items.get(id); if (!it) return;
+  editingId = id;
+  const all = [...state.items.values()];
+  const uniq = arr => [...new Set(arr.map(x => (x || '').trim()).filter(Boolean))].sort(collator.compare);
+  $('#dlArtists').innerHTML = uniq(all.map(i => i.artist)).map(a => `<option value="${esc(a)}">`).join('');
+  $('#dlAlbums').innerHTML = uniq(all.map(i => i.album)).map(a => `<option value="${esc(a)}">`).join('');
+  $('#edTitle').value = it.title || '';
+  $('#edArtist').value = it.artist || '';
+  $('#edAlbum').value = it.album || '';
+  $('#edTrack').value = it.track || '';
+  $('#editDlg').showModal();
+  $('#edTitle').focus(); $('#edTitle').select();
+}
+async function saveEdit(e) {
+  e.preventDefault();
+  const it = state.items.get(editingId);
+  if (!it) return $('#editDlg').close();
+  const title = $('#edTitle').value.trim();
+  if (!title) return $('#edTitle').focus();
+  it.title = title;
+  it.artist = $('#edArtist').value.trim();
+  it.album = $('#edAlbum').value.trim();
+  it.track = Math.max(0, parseInt($('#edTrack').value, 10) || 0);
+  $('#editDlg').close();
+  await DB.put('items', it);
+  if (state.currentId === it.id) { updateNowPlaying(); setMediaSession(it); }
+  renderNav(); renderMain(); refreshQueue();
+  toast('Información guardada');
+}
+
+/* ---- Cabecera plegable ---- */
+function setHeadCollapsed(on, save = true) {
+  $('#head').classList.toggle('collapsed', on);
+  $('#app').classList.toggle('top-hidden', on);
+  const b = $('#headToggle');
+  b.setAttribute('aria-expanded', String(!on));
+  b.setAttribute('aria-label', on ? 'Mostrar herramientas' : 'Ocultar herramientas');
+  if (save) { try { localStorage.setItem('orpheus-head', on ? '1' : '0'); } catch (e) {} }
+}
+
 /* ============================ 9. EVENTS ============================ */
 function bindEvents() {
   /* Navegación */
@@ -834,18 +1073,18 @@ function bindEvents() {
   /* Cabecera */
   $('#addBtn').onclick = () => $('#fileInput').click();
   $('#fileInput').onchange = e => { importFiles(e.target.files); e.target.value = ''; };
-  $('#playAll').onclick = () => { const a = visibleItems(); if (a.length) playFromView(a[0].id); };
-  $('#playShuffle').onclick = () => {
-    const a = visibleItems(); if (!a.length) return;
-    state.shuffle = true; savePrefs(); updateModes();
-    playFromView(a[Math.floor(Math.random() * a.length)].id);
-  };
+  $('#playAll').onclick = () => { const a = visibleItems(); if (a.length) playFromView(a[0].id, true); };
+  $('#playShuffle').onclick = playRandom;
+  $('#headToggle').onclick = () => setHeadCollapsed(!$('#head').classList.contains('collapsed'));
+  $('#editForm').onsubmit = saveEdit;
+  $('#edCancel').onclick = () => $('#editDlg').close();
   $('#search').oninput = e => { state.query = e.target.value; renderRows(); };
   $('#sort').onchange = e => { state.sort = e.target.value; renderRows(); };
   $('.head').addEventListener('click', e => {
     const b = e.target.closest('[data-act]'); if (!b) return;
     if (b.dataset.act === 'rename-list') renameList();
     if (b.dataset.act === 'delete-list') deleteList();
+    if (b.dataset.act === 'to-albums') setView('albums');
   });
 
   /* Filas */
@@ -853,6 +1092,7 @@ function bindEvents() {
   rows.addEventListener('click', e => {
     const act = e.target.closest('[data-act]');
     if (act && act.dataset.act === 'add') return $('#fileInput').click();
+    const al = e.target.closest('.album'); if (al) return setView('album', al.dataset.album);
     const row = e.target.closest('.row'); if (!row) return;
     const id = row.dataset.id;
     if (act?.dataset.act === 'fav') return toggleFav(id);
@@ -873,6 +1113,8 @@ function bindEvents() {
     else if (b.dataset.m === 'newlist') newList(id);
     else if (b.dataset.m === 'remove') removeFromList(id);
     else if (b.dataset.m === 'delete') deleteItem(id);
+    else if (b.dataset.m === 'edit') editItem(id);
+    else if (b.dataset.m === 'goalbum') { const it = state.items.get(id); if (it) setView('album', albumKey(it.album)); }
   });
   document.addEventListener('pointerdown', e => { if (!$('#menu').hidden && !e.target.closest('#menu')) closeMenu(); });
   addEventListener('resize', closeMenu);
@@ -893,6 +1135,9 @@ function bindEvents() {
   });
   $('#volume').addEventListener('input', e => { audio.muted = false; audio.volume = +e.target.value; updateVolume(); savePrefs(); });
   $('#muteBtn').onclick = () => { audio.muted = !audio.muted; updateVolume(); };
+  $('#expandBtn').onclick = () => setExpanded(!state.expanded);
+  $('.now').addEventListener('click', e => { if (!state.expanded && state.currentId && e.target.closest('.np-cover,.np-text')) setExpanded(true); });
+  bindQueue();
 
   audio.addEventListener('timeupdate', updateTimes);
   audio.addEventListener('durationchange', updateTimes);
@@ -943,7 +1188,7 @@ function bindEvents() {
   addEventListener('keydown', e => {
     if (e.target.closest('input,select,textarea,dialog')) return;
     if (e.ctrlKey || e.metaKey || e.altKey) return;
-    if (e.key === 'Escape') return closeMenu();
+    if (e.key === 'Escape') { if (!$('#menu').hidden) closeMenu(); else if (state.expanded) setExpanded(false); return; }
     if (e.key === ' ' && !e.target.closest('button,.row,.menu')) { e.preventDefault(); togglePlay(); }
     else if (e.key === 'ArrowRight') { e.preventDefault(); e.shiftKey ? step(1) : (audio.currentTime += CONFIG.seekStepSec); }
     else if (e.key === 'ArrowLeft') { e.preventDefault(); e.shiftKey ? prev() : (audio.currentTime -= CONFIG.seekStepSec); }
@@ -1024,6 +1269,7 @@ async function logout() {
   state.shuffle = !!prefs?.shuffle;
   state.repeat = prefs?.repeat || 'off';
 
+  try { setHeadCollapsed(localStorage.getItem('orpheus-head') === '1', false); } catch (e) {}
   bindEvents();
   buildSortOptions(); renderNav(); renderMain();
   updateNowPlaying(); updateModes(); updateVolume(); updateTimes();
