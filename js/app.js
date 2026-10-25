@@ -936,18 +936,15 @@ function queueRowHTML(id) {
   </div>`;
 }
 function renderQueue() {
-  const sc = $('#qScroll'), top = sc.scrollTop;
   $('#qList').innerHTML = state.order.map(queueRowHTML).join('');
   $('#qInfo').textContent = `${sourceLabel()} · ${state.order.length}${state.shuffle ? ' · aleatorio' : ''}`;
-  sc.scrollTop = top;
   markQueue();
 }
 const refreshQueue = () => { if (state.expanded) renderQueue(); };
-function markQueue(center = false) {
+function markQueue() {
   if (!state.expanded) return;
   const rows = $('#qList').children;
   for (let i = 0; i < rows.length; i++) rows[i].classList.toggle('current', i === state.pos);
-  rows[state.pos]?.scrollIntoView({ block: center ? 'center' : 'nearest' });
 }
 function setExpanded(on) {
   if (on && !state.currentId) return;
@@ -957,7 +954,7 @@ function setExpanded(on) {
   const b = $('#expandBtn');
   b.setAttribute('aria-expanded', String(on));
   b.setAttribute('aria-label', on ? 'Cerrar cola de reproducción' : 'Abrir cola de reproducción');
-  if (on) { renderQueue(); markQueue(true); }
+  if (on) { renderQueue(); $('#player').scrollTop = 0; }
 }
 function removeFromQueue(i) {
   const id = state.order[i]; if (id == null) return;
@@ -986,7 +983,7 @@ function bindQueue() {
   });
   list.addEventListener('pointermove', e => {
     if (!drag || e.pointerId !== drag.pid) return;
-    const sc = $('#qScroll'), r = sc.getBoundingClientRect();
+    const sc = $('#player'), r = sc.getBoundingClientRect();
     if (e.clientY < r.top + 36) sc.scrollTop -= 14; else if (e.clientY > r.bottom - 36) sc.scrollTop += 14;
     let before = null;
     for (const s of list.children) {
@@ -1015,6 +1012,34 @@ function bindQueue() {
     if (i === state.pos) return togglePlay();
     jumpTo(i);
   });
+}
+
+/* Deslizar hacia abajo para cerrar la ventana (solo si el panel está arriba del todo) */
+function bindSheet() {
+  const p = $('#player');
+  let y0 = null, dy = 0;
+  p.addEventListener('touchstart', e => {
+    if (!state.expanded || p.scrollTop > 0 || e.target.closest('.q-handle,input[type=range]')) { y0 = null; return; }
+    y0 = e.touches[0].clientY; dy = 0;
+  }, { passive: true });
+  p.addEventListener('touchmove', e => {
+    if (y0 == null) return;
+    dy = e.touches[0].clientY - y0;
+    if (dy > 0 && p.scrollTop <= 0) {
+      if (e.cancelable) e.preventDefault();
+      p.style.transition = 'none'; p.style.transform = `translateY(${dy}px)`;
+    } else { p.style.transform = ''; }
+  }, { passive: false });
+  const end = () => {
+    if (y0 == null) return;
+    const close = dy > 110;
+    y0 = null; dy = 0;
+    p.style.transition = 'transform .18s';
+    p.style.transform = close ? 'translateY(100%)' : '';
+    setTimeout(() => { p.style.transition = ''; if (close) { setExpanded(false); p.style.transform = ''; } }, 190);
+  };
+  p.addEventListener('touchend', end);
+  p.addEventListener('touchcancel', end);
 }
 
 /* ---- Editar información (título, autor, álbum, nº de pista) ---- */
@@ -1137,7 +1162,7 @@ function bindEvents() {
   $('#muteBtn').onclick = () => { audio.muted = !audio.muted; updateVolume(); };
   $('#expandBtn').onclick = () => setExpanded(!state.expanded);
   $('.now').addEventListener('click', e => { if (!state.expanded && state.currentId && e.target.closest('.np-cover,.np-text')) setExpanded(true); });
-  bindQueue();
+  bindQueue(); bindSheet();
 
   audio.addEventListener('timeupdate', updateTimes);
   audio.addEventListener('durationchange', updateTimes);
