@@ -1,0 +1,162 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<title>Orpheus · Pasar canciones a Backblaze</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  :root { color-scheme: light dark; --bg:#14110f; --fg:#f3ece4; --mut:#a89e92; --card:#1f1b18; --acc:#e8a33d; --ok:#6bc28a; --bad:#f06a5a; }
+  @media (prefers-color-scheme: light) { :root { --bg:#faf6f0; --fg:#1d1915; --mut:#6e655b; --card:#fff; --acc:#b86e00; --ok:#1f8a4c; --bad:#c0392b; } }
+  * { box-sizing: border-box; }
+  body { margin:0; font:16px/1.5 system-ui,-apple-system,"Segoe UI",sans-serif; background:var(--bg); color:var(--fg); padding:24px 16px; }
+  main { max-width:640px; margin:0 auto; }
+  h1 { font-size:1.4rem; margin:0 0 4px; }
+  p { color:var(--mut); margin:6px 0 16px; }
+  .card { background:var(--card); border-radius:14px; padding:18px; margin:14px 0; }
+  button { font:inherit; font-weight:600; border:0; border-radius:10px; padding:11px 18px; background:var(--acc); color:#1b1206; cursor:pointer; }
+  button:disabled { opacity:.5; cursor:default; }
+  .bar { height:10px; background:rgba(128,128,128,.25); border-radius:99px; overflow:hidden; margin:12px 0 6px; }
+  .bar > i { display:block; height:100%; width:0; background:var(--acc); transition:width .2s; }
+  .nums { display:flex; gap:16px; flex-wrap:wrap; font-size:.95rem; }
+  .nums b { font-variant-numeric:tabular-nums; }
+  .ok { color:var(--ok); } .bad { color:var(--bad); }
+  #cur { color:var(--mut); font-size:.9rem; min-height:1.4em; word-break:break-all; }
+  #errs { font-size:.85rem; color:var(--bad); max-height:220px; overflow:auto; white-space:pre-wrap; margin-top:10px; }
+  a { color:var(--acc); }
+</style>
+</head>
+<body>
+<main>
+  <h1>Pasar tus canciones a Backblaze</h1>
+  <p>Copia cada canción que tienes en Supabase al nuevo almacenamiento. No borra nada, y si se corta puedes volver a pulsar el botón: solo copia lo que falte.</p>
+
+  <div class="card" id="noSession" hidden>
+    <b>Primero inicia sesión.</b>
+    <p>Abre <a href="./">Orpheus</a>, entra con tu usuario y vuelve a esta página.</p>
+  </div>
+
+  <div class="card" id="panel" hidden>
+    <button id="go" type="button">Empezar a copiar</button>
+    <div class="bar"><i id="fill"></i></div>
+    <div class="nums">
+      <span>Canciones: <b id="nTotal">–</b></span>
+      <span class="ok">Copiadas: <b id="nCopied">0</b></span>
+      <span>Ya estaban: <b id="nSkipped">0</b></span>
+      <span class="bad">Con error: <b id="nFailed">0</b></span>
+    </div>
+    <div id="cur"></div>
+    <div id="errs" hidden></div>
+    <p id="done" class="ok" hidden></p>
+  </div>
+</main>
+
+<script>
+/* ===== Ajustes (los mismos que usa la página) ===== */
+const SUPABASE_URL = 'https://phhlkybgxezcymixajnj.supabase.co';
+const SUPABASE_KEY = 'sb_publishable_mir-9ntK2ZBXFsgbuqvGqA_eyyTCeGv';
+const WORKER = 'https://orpheus-audio.frozxd162.workers.dev';
+const OLD_BUCKET = 'songs';
+const SKEY = 'orpheus-session';
+
+const $ = id => document.getElementById(id);
+const enc = encodeURIComponent;
+let session = null;
+try { session = JSON.parse(localStorage.getItem(SKEY)); } catch (e) {}
+
+async function token() {
+  if (!session) throw new Error('Sin sesión: abre Orpheus e inicia sesión');
+  if (session.expires_at - 90 < Date.now() / 1000) {
+    const r = await fetch(`${SUPABASE_URL}/auth/v1/token?grant_type=refresh_token`, {
+      method: 'POST', headers: { apikey: SUPABASE_KEY, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ refresh_token: session.refresh_token }),
+    });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error('La sesión caducó: abre Orpheus, inicia sesión y vuelve aquí');
+    session = { access_token: j.access_token, refresh_token: j.refresh_token, expires_at: j.expires_at || Math.floor(Date.now() / 1000) + (j.expires_in || 3600), user_id: j.user.id, email: j.user.email };
+    localStorage.setItem(SKEY, JSON.stringify(session));   // se comparte con la página para que ambas sigan con la sesión vigente
+  }
+  return session.access_token;
+}
+
+async function listIds() {
+  const out = [];
+  for (let off = 0; ; off += 1000) {
+    const r = await fetch(`${SUPABASE_URL}/rest/v1/orpheus_data?select=id,data&store=eq.items&order=id&limit=1000&offset=${off}`, {
+      headers: { apikey: SUPABASE_KEY, Authorization: 'Bearer ' + await token() },
+    });
+    if (!r.ok) throw new Error('No se pudo leer la lista de canciones (' + r.status + ')');
+    const rows = await r.json();
+    out.push(...rows);
+    if (rows.length < 1000) break;
+  }
+  return out;
+}
+async function existsInB2(id) {
+  const r = await fetch(`${WORKER}/f/${enc(id)}`, { method: 'HEAD', headers: { Authorization: 'Bearer ' + await token() } });
+  if (r.status === 200) return true;
+  if (r.status === 404) return false;
+  throw new Error('El Worker respondió ' + r.status + (r.status === 401 || r.status === 403 ? ' (revisa el usuario autorizado)' : ''));
+}
+async function copyOne(id) {
+  const d = await fetch(`${SUPABASE_URL}/storage/v1/object/authenticated/${OLD_BUCKET}/${session.user_id}/${enc(id)}`, {
+    headers: { apikey: SUPABASE_KEY, Authorization: 'Bearer ' + await token() },
+  });
+  if (d.status === 404 || d.status === 400) throw new Error('el archivo no está en Supabase');
+  if (!d.ok) throw new Error('Supabase respondió ' + d.status);
+  const blob = await d.blob();
+  const u = await fetch(`${WORKER}/f/${enc(id)}`, {
+    method: 'PUT', headers: { Authorization: 'Bearer ' + await token(), 'Content-Type': blob.type || 'audio/mpeg' }, body: blob,
+  });
+  if (!u.ok) { let m = ''; try { m = (await u.json()).error; } catch (e) {} throw new Error(m || 'El Worker respondió ' + u.status); }
+}
+
+let running = false;
+async function run() {
+  if (running) return; running = true;
+  const go = $('go'); go.disabled = true; go.textContent = 'Copiando…';
+  $('errs').hidden = true; $('errs').textContent = ''; $('done').hidden = true;
+  let copied = 0, skipped = 0, failed = 0, finished = 0;
+  const errs = [];
+  try {
+    const rows = await listIds();
+    const total = rows.length; $('nTotal').textContent = total;
+    const update = () => {
+      $('nCopied').textContent = copied; $('nSkipped').textContent = skipped; $('nFailed').textContent = failed;
+      $('fill').style.width = (total ? finished / total * 100 : 100) + '%';
+    };
+    let next = 0;
+    const worker = async () => {
+      while (next < rows.length) {
+        const row = rows[next++];
+        const name = (row.data && (row.data.title || row.data.name)) || row.id;
+        $('cur').textContent = 'Revisando: ' + name;
+        try {
+          if (await existsInB2(row.id)) skipped++;
+          else { $('cur').textContent = 'Copiando: ' + name; await copyOne(row.id); copied++; }
+        } catch (e) {
+          failed++; errs.push(`· ${name}: ${e.message}`);
+          if (/sesión/i.test(e.message)) next = rows.length;      // sin sesión no tiene sentido seguir
+        }
+        finished++; update();
+      }
+    };
+    await Promise.all([worker(), worker()]);
+    update();
+    $('cur').textContent = '';
+    $('done').hidden = false;
+    $('done').className = failed ? 'bad' : 'ok';
+    $('done').textContent = failed
+      ? `Terminó con ${failed} error(es). Pulsa de nuevo el botón para reintentar solo lo que falta.`
+      : '¡Listo! Todas las canciones están en Backblaze. Ya puedes abrir Orpheus y comprobar que suenan.';
+  } catch (e) {
+    $('cur').textContent = ''; $('done').hidden = false; $('done').className = 'bad'; $('done').textContent = e.message;
+  }
+  if (errs.length) { $('errs').hidden = false; $('errs').textContent = errs.join('\n'); }
+  go.disabled = false; go.textContent = 'Volver a intentar lo que falte'; running = false;
+}
+
+if (!session) $('noSession').hidden = false;
+else { $('panel').hidden = false; $('go').onclick = run; }
+</script>
+</body>
+</html>
